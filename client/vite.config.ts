@@ -1,7 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 
-const API_TARGET = 'http://localhost:4000';
+const API_TARGET = process.env.VITE_API_PROXY_TARGET || 'http://localhost:4000';
 
 export default defineConfig({
   plugins: [react()],

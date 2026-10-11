@@ -54,6 +54,11 @@ All notable changes to this project are documented here.
   and its sockets, copied-`clientDeviceId` impersonation fails, session survives an IP
   change, legacy upgrade, concurrent replacement leaves one active device
   (44 server tests total).
+- End-to-end tests (`@playwright/test`, 4 tests): first-device registration, second-device
+  rejection with `409 device_already_registered`, authorized replacement that signs the
+  previous device out, refresh/reconnect stays valid, and chat still works after auth.
+  The runner boots the real server against an in-memory database on isolated ports
+  (`E2E_SERVER_PORT`/`E2E_CLIENT_PORT`) and never touches the dev database.
 
 ## [0.1.0] - 2026-10-10
 

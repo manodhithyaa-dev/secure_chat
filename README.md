@@ -39,6 +39,8 @@ npm run dev:server     # backend only, watch mode
 npm run dev:client     # frontend only
 npm run build          # type-check + production frontend build
 npm test               # server (node:test) + client (vitest) suites
+npx playwright install chromium   # one-time: download the E2E browser
+npm run test:e2e       # Playwright end-to-end tests (isolated server + client)
 ```
 
 ## Try it

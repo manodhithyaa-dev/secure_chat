@@ -73,6 +73,11 @@ Last updated: 2026-10-11. Version 0.1.0.
   account-scoped storage isolation, logout/login history restore, legacy migration
   into the recoverable archive, explicit recovery, idempotent interrupted migration,
   and session-invalidation signalling for a replaced/revoked device.
+- E2E (`@playwright/test`, 4 tests, Chromium): first-device registration + refresh,
+  second-device rejection (asserts `409 device_already_registered`), authorized
+  replacement that signs the previous device out and keeps the new device valid across
+  a refresh, and a friend-request + encrypted-message round trip. Runs the real server
+  on an in-memory DB and the real client on isolated ports.
 - Production build: `npm run build` succeeds (`tsc --noEmit` + Vite).
 
 ## Incomplete / limited (works, but not production-grade)
