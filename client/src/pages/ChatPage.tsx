@@ -2,6 +2,8 @@ import { useState } from 'react';
 import Sidebar from '../components/Sidebar';
 import ChatWindow from '../components/ChatWindow';
 import ProfilePanel from '../components/ProfilePanel';
+import CallScreen from '../components/CallScreen';
+import IncomingCallOverlay from '../components/IncomingCallOverlay';
 import { useChat } from '../features/chat/ChatContext';
 
 export default function ChatPage() {
@@ -18,6 +20,10 @@ export default function ChatPage() {
         </div>
       )}
       {chat.bootError && <div className="boot-error">Startup issue: {chat.bootError}</div>}
+      {chat.callError && <div className="notice error call-error">{chat.callError}</div>}
+      {chat.callNotice && <div className="call-notice">{chat.callNotice}</div>}
+      {chat.call && <CallScreen />}
+      {chat.incomingCall && <IncomingCallOverlay />}
       {profileOpen && <ProfilePanel onClose={() => setProfileOpen(false)} />}
     </div>
   );

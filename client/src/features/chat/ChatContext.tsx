@@ -10,6 +10,16 @@ import React, {
 import { api } from '../../services/api';
 import { notifySessionInvalid, sessionInvalidReasonFor } from '../../services/session';
 import { createSocket, type ConnectionState, type IncomingMessageEvent } from '../../services/socket';
+import {
+  CALL_EVENTS,
+  newCallId,
+  type CallRingEvent,
+  type CallRole,
+  type CallSignalEvent,
+  type CallSignalMessage,
+  type CallStatus,
+} from '../../services/callSignaling';
+import { RtcPeer } from '../../services/peer';
 import { storage } from '../../storage/repositories';
 import {
   clearSessionCache,
@@ -18,11 +28,23 @@ import {
   generateIdentity,
   getSessionKey,
 } from '../../crypto';
+import {
+  base64ToBytes,
+  bytesToBase64,
+  decryptAttachmentBlob,
+  encryptAttachmentBlob,
+} from '../../crypto/attachment';
+import {
+  buildAttachmentPayload,
+  parseMessagePayload,
+  type AttachmentMeta,
+} from '../../crypto/payload';
 import type {
   Conversation,
   Friend,
   FriendRequest,
   IdentityRecord,
+  LocalAttachment,
   LocalMessage,
   MessageStatus,
   OutboxRecord,
@@ -30,6 +52,40 @@ import type {
   User,
 } from '../../types';
 import type { Socket } from 'socket.io-client';
+
+const MAX_ATTACHMENT_BYTES = 16 * 1024 * 1024;
+
+function inferAttachmentKind(blob: Blob): LocalAttachment['kind'] {
+  const t = (blob.type || '').toLowerCase();
+  if (t.startsWith('image/')) return 'image';
+  if (t.startsWith('audio/')) return 'audio';
+  return 'file';
+}
+
+function attachmentPreviewFor(message: LocalMessage): string {
+  const att = message.attachment;
+  if (!att) return '';
+  if (att.kind === 'image') return '[Photo]';
+  if (att.kind === 'audio') return '[Voice message]';
+  return `[File] ${att.name}`;
+}
+
+/** Locally-tracked 1:1 call. `peer` is always the other participant. */
+export interface ActiveCall {
+  callId: string;
+  peer: Friend;
+  role: CallRole;
+  status: CallStatus;
+  startedAt: number;
+  muted: boolean;
+  video: boolean;
+}
+
+export interface IncomingCallInfo {
+  callId: string;
+  caller: Friend;
+  video: boolean;
+}
 
 interface ChatContextValue {
   user: User;
@@ -48,6 +104,9 @@ interface ChatContextValue {
   setActivePeerId: (peerId: string | null) => void;
   openConversation: (peerId: string) => Promise<void>;
   sendMessage: (text: string) => Promise<void>;
+  sendAttachment: (file: File) => Promise<void>;
+  retryAttachment: (conversationId: string, messageId: string) => Promise<void>;
+  retryAttachmentDownload: (conversationId: string, messageId: string) => Promise<void>;
   retryOutbox: () => Promise<void>;
   refresh: () => Promise<void>;
   search: (q: string) => Promise<SearchResult[]>;
@@ -55,6 +114,17 @@ interface ChatContextValue {
   acceptRequest: (id: string) => Promise<void>;
   rejectRequest: (id: string) => Promise<void>;
   cancelRequest: (id: string) => Promise<void>;
+call: ActiveCall | null;
+  incomingCall: IncomingCallInfo | null;
+  callError: string | null;
+  remoteStream: MediaStream | null;
+  localStream: MediaStream | null;
+  callNotice: string | null;
+  startCall: (peerId: string, kind?: 'audio' | 'video') => Promise<void>;
+  acceptCall: () => Promise<void>;
+  declineCall: () => void;
+  endCall: () => void;
+  toggleMute: () => void;
 }
 
 const ChatContext = createContext<ChatContextValue | null>(null);
@@ -78,6 +148,12 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
   const [messages, setMessages] = useState<Record<string, LocalMessage[]>>({});
   const [activePeerId, setActivePeerIdState] = useState<string | null>(null);
   const [peerError, setPeerError] = useState<string | null>(null);
+  const [call, setCall] = useState<ActiveCall | null>(null);
+  const [incomingCall, setIncomingCall] = useState<IncomingCallInfo | null>(null);
+  const [callError, setCallError] = useState<string | null>(null);
+  const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
+  const [localStream, setLocalStream] = useState<MediaStream | null>(null);
+  const [callNotice, setCallNotice] = useState<string | null>(null);
 
   const userRef = useRef(user);
   const identityRef = useRef<IdentityRecord | null>(null);
@@ -86,11 +162,16 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
   const deviceIdRef = useRef<string | null>(null);
   const peerKeysRef = useRef<Map<string, string>>(new Map());
   const socketRef = useRef<Socket | null>(null);
+  const callRef = useRef<ActiveCall | null>(null);
+  const incomingRef = useRef<IncomingCallInfo | null>(null);
+  const peerRef = useRef<RtcPeer | null>(null);
 
   userRef.current = user;
   identityRef.current = identity;
   friendsRef.current = friends;
   activePeerRef.current = activePeerId;
+  callRef.current = call;
+  incomingRef.current = incomingCall;
 
   const setActivePeerId = useCallback((peerId: string | null) => {
     activePeerRef.current = peerId;
@@ -179,7 +260,10 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       conversation.peerDisplayName = friend.displayName;
     }
     conversation.lastMessageAt = message.createdAt;
-    conversation.lastMessagePreview = message.plaintext || '[encrypted message]';
+    conversation.lastMessagePreview =
+      (message.attachment ? attachmentPreviewFor(message) : null) ||
+      message.plaintext ||
+      '[encrypted message]';
     if (message.direction === 'in' && activePeerRef.current !== message.peerId) {
       conversation.unread += 1;
     }
@@ -215,6 +299,78 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
     [],
   );
 
+  /**
+   * Load a stored message, transform it, persist it and mirror it into React
+   * state. Used by the attachment pipelines to keep status/progress fresh.
+   */
+  const updateStoredMessage = useCallback(
+    async (messageId: string, fn: (m: LocalMessage) => LocalMessage) => {
+      const ownerId = userRef.current.id;
+      const existing = await storage.getMessage(ownerId, messageId);
+      if (!existing) return undefined;
+      const next = fn(existing);
+      await storage.saveMessage(ownerId, next);
+      patchMessageInState(next.conversationId, messageId, next);
+      return next;
+    },
+    [patchMessageInState],
+  );
+
+  /**
+   * Download (encrypted) + decrypt an incoming attachment, storing the plain
+   * media blob locally so it renders offline. Revokes stale object URLs.
+   */
+  const downloadIncomingAttachment = useCallback(
+    async (messageId: string, meta: AttachmentMeta) => {
+      await updateStoredMessage(messageId, (m) => ({
+        ...m,
+        attachment: {
+          ...m.attachment!,
+          serverId: m.attachment!.serverId ?? meta.id,
+          meta,
+          status: 'downloading',
+          progress: 0,
+          error: undefined,
+        },
+      }));
+      try {
+        const cipherArray = await api.downloadAttachment(meta.id, (p) => {
+          void updateStoredMessage(messageId, (m) => ({
+            ...m,
+            attachment: { ...m.attachment!, progress: p },
+          }));
+        });
+        const decrypted = await decryptAttachmentBlob(
+          new Blob([cipherArray]),
+          base64ToBytes(meta.key),
+          base64ToBytes(meta.salt),
+          (p) => {
+            void updateStoredMessage(messageId, (m) => ({
+              ...m,
+              attachment: { ...m.attachment!, progress: p.total ? p.done / p.total : 1 },
+            }));
+          },
+        );
+        const url = URL.createObjectURL(decrypted);
+        await updateStoredMessage(messageId, (m) => {
+          const prev = m.attachment;
+          if (prev?.objectUrl) URL.revokeObjectURL(prev.objectUrl);
+          return {
+            ...m,
+            attachment: { ...m.attachment!, blob: decrypted, objectUrl: url, status: 'available', progress: 1 },
+          };
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'download failed';
+        await updateStoredMessage(messageId, (m) => ({
+          ...m,
+          attachment: { ...m.attachment!, status: 'failed', error: message },
+        }));
+      }
+    },
+    [updateStoredMessage],
+  );
+
   const acknowledge = useCallback(async (messageId: string) => {
     const socket = socketRef.current;
     if (socket && socket.connected) {
@@ -242,6 +398,7 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
 
       let plaintext = '';
       let error: string | undefined;
+      let attachment: LocalAttachment | undefined;
       try {
         const peerKey = await getPeerPublicKey(event.senderId);
         const sessionKey = await getSessionKey({
@@ -255,6 +412,21 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
           { ciphertext: event.ciphertext, iv: event.iv, alg: 'AES-256-GCM' },
           { senderId: event.senderId, recipientId: me.id, messageId: event.messageId },
         );
+        const parsed = parseMessagePayload(plaintext);
+        if (parsed.type === 'attachment') {
+          const meta = parsed.meta;
+          attachment = {
+            serverId: meta.id,
+            kind: meta.kind,
+            name: meta.name,
+            mime: meta.mime,
+            size: meta.size,
+            cipherSize: meta.cipherSize,
+            meta,
+            status: 'downloading',
+            progress: 0,
+          };
+        }
       } catch {
         error = 'Unable to decrypt this message';
         setPeerError(error);
@@ -276,13 +448,19 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
         createdAt: event.createdAt || Date.now(),
         updatedAt: Date.now(),
         error,
+        ...(attachment ? { attachment } : {}),
       };
       await storage.saveMessage(me.id, message);
       addMessageToState(message);
       await upsertConversation(message);
       await acknowledge(message.id);
+      if (attachment) {
+        // The metadata/key/salt are already persisted; fetch + decrypt the
+        // media asynchronously so the timeline renders without blocking.
+        void downloadIncomingAttachment(message.id, attachment.meta!);
+      }
     },
-    [acknowledge, addMessageToState, getPeerPublicKey, upsertConversation],
+    [acknowledge, addMessageToState, getPeerPublicKey, upsertConversation, downloadIncomingAttachment],
   );
 
   const syncPending = useCallback(async () => {
@@ -303,6 +481,7 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
           iv: record.iv,
           alg: record.alg,
           deviceId: deviceIdRef.current ?? undefined,
+          attachmentId: record.attachmentId,
         });
         const status: MessageStatus = res.status === 'delivered' ? 'delivered' : 'sent';
         await storage.updateMessageStatus(ownerId, record.id, status);
@@ -321,6 +500,201 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       }
     },
     [patchMessageInState],
+  );
+
+  /**
+   * Full outbound attachment pipeline: encrypt locally → create a server
+   * ticket → stream the ciphertext → build the E2EE envelope containing the
+   * content key/salt → submit the message (which links the attachment).
+   */
+  const uploadAndSendAttachment = useCallback(
+    async (peerId: string, messageId: string, file: Blob, fileName: string) => {
+      const me = userRef.current;
+      const currentIdentity = identityRef.current;
+      if (!currentIdentity) return;
+      const kind = inferAttachmentKind(file);
+      const mime = file.type || 'application/octet-stream';
+      setPeerError(null);
+      try {
+        await updateStoredMessage(messageId, (m) => ({
+          ...m,
+          attachment: { ...m.attachment!, status: 'uploading', progress: 0, error: undefined },
+        }));
+
+        const encrypted = await encryptAttachmentBlob(file, (p) => {
+          void updateStoredMessage(messageId, (m) => ({
+            ...m,
+            attachment: {
+              ...m.attachment!,
+              progress: p.total ? p.done / p.total : 1,
+            },
+          }));
+        });
+
+        const ticket = await api.createAttachmentTicket({
+          kind,
+          name: fileName,
+          contentType: mime,
+          plainSize: encrypted.plainSize,
+          cipherSize: encrypted.cipherSize,
+        });
+
+        await api.uploadAttachmentData(ticket.attachment.id, encrypted.ciphertext, (p) => {
+          void updateStoredMessage(messageId, (m) => ({
+            ...m,
+            attachment: { ...m.attachment!, serverId: ticket.attachment.id, progress: p },
+          }));
+        });
+
+        const meta: AttachmentMeta = {
+          id: ticket.attachment.id,
+          kind,
+          name: fileName,
+          mime,
+          size: encrypted.plainSize,
+          cipherSize: encrypted.cipherSize,
+          key: bytesToBase64(encrypted.key),
+          salt: bytesToBase64(encrypted.salt),
+        };
+        const payloadText = buildAttachmentPayload(meta);
+
+        const peerKey = await getPeerPublicKey(peerId);
+        const sessionKey = await getSessionKey({
+          myUserId: me.id,
+          myPrivateKey: currentIdentity.privateKey,
+          peerUserId: peerId,
+          peerPublicKeyBase64: peerKey,
+        });
+        const payload = await encryptMessage(sessionKey, payloadText, {
+          senderId: me.id,
+          recipientId: peerId,
+          messageId,
+        });
+
+        const now = Date.now();
+        await updateStoredMessage(messageId, (m) => ({
+          ...m,
+          plaintext: payloadText,
+          ciphertext: payload.ciphertext,
+          iv: payload.iv,
+          alg: payload.alg,
+          status: 'pending',
+          error: undefined,
+          attachment: {
+            ...m.attachment!,
+            serverId: meta.id,
+            meta,
+            blob: m.attachment!.blob ?? file,
+            objectUrl: m.attachment!.objectUrl ?? URL.createObjectURL(file),
+            cipherSize: meta.cipherSize,
+            status: 'available',
+            progress: 1,
+            error: undefined,
+          },
+        }));
+
+        const record: OutboxRecord = {
+          id: messageId,
+          ownerId: me.id,
+          recipientId: peerId,
+          ciphertext: payload.ciphertext,
+          iv: payload.iv,
+          alg: payload.alg,
+          createdAt: now,
+          status: 'pending',
+          attempts: 0,
+          attachmentId: meta.id,
+        };
+        await storage.upsertOutbox(me.id, record);
+        await deliverOutboxRecord(record);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'attachment failed';
+        await updateStoredMessage(messageId, (m) => ({
+          ...m,
+          status: 'failed',
+          error: message,
+          attachment: { ...m.attachment!, status: 'failed', error: message },
+        }));
+      }
+    },
+    [deliverOutboxRecord, getPeerPublicKey, updateStoredMessage],
+  );
+
+  const sendAttachment = useCallback(
+    async (file: File) => {
+      const peerId = activePeerRef.current;
+      const me = userRef.current;
+      if (!peerId) return;
+      if (file.size > MAX_ATTACHMENT_BYTES) {
+        setPeerError(`Files are limited to ${MAX_ATTACHMENT_BYTES / (1024 * 1024)} MiB.`);
+        return;
+      }
+      const messageId = crypto.randomUUID();
+      const now = Date.now();
+      const attachment: LocalAttachment = {
+        serverId: null,
+        kind: inferAttachmentKind(file),
+        name: file.name,
+        mime: file.type || 'application/octet-stream',
+        size: file.size,
+        cipherSize: null,
+        meta: null,
+        status: 'preparing',
+        progress: 0,
+        blob: file,
+      };
+      const message: LocalMessage = {
+        id: messageId,
+        ownerId: me.id,
+        conversationId: peerId,
+        peerId,
+        direction: 'out',
+        senderId: me.id,
+        recipientId: peerId,
+        plaintext: '',
+        ciphertext: '',
+        iv: '',
+        alg: '',
+        status: 'pending',
+        createdAt: now,
+        updatedAt: now,
+        attachment,
+      };
+      await storage.saveMessage(me.id, message);
+      addMessageToState(message);
+      await upsertConversation(message);
+      void uploadAndSendAttachment(peerId, messageId, file, file.name);
+    },
+    [addMessageToState, uploadAndSendAttachment, upsertConversation],
+  );
+
+  const retryAttachment = useCallback(
+    async (_conversationId: string, messageId: string) => {
+      const ownerId = userRef.current.id;
+      const m = await storage.getMessage(ownerId, messageId);
+      if (!m?.attachment?.blob) return;
+      if (m.attachment.serverId) {
+        await api.deleteAttachment(m.attachment.serverId).catch(() => {});
+      }
+      await updateStoredMessage(messageId, (msg) => ({
+        ...msg,
+        status: 'pending',
+        error: undefined,
+        attachment: { ...msg.attachment!, status: 'preparing', progress: 0, error: undefined },
+      }));
+      void uploadAndSendAttachment(m.peerId, messageId, m.attachment.blob, m.attachment.name);
+    },
+    [updateStoredMessage, uploadAndSendAttachment],
+  );
+
+  const retryAttachmentDownload = useCallback(
+    async (_conversationId: string, messageId: string) => {
+      const ownerId = userRef.current.id;
+      const m = await storage.getMessage(ownerId, messageId);
+      if (!m?.attachment?.meta) return;
+      void downloadIncomingAttachment(messageId, m.attachment.meta);
+    },
+    [downloadIncomingAttachment],
   );
 
   const retryOutbox = useCallback(async () => {
@@ -405,7 +779,29 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       const ownerId = userRef.current.id;
       setActivePeerId(peerId);
       setPeerError(null);
-      const loaded = await storage.listMessages(ownerId, peerId);
+      const loaded = (await storage.listMessages(ownerId, peerId)).map((m) => {
+        const att = m.attachment;
+        if (att && att.status === 'available' && att.blob && !att.objectUrl) {
+          const attachment: LocalAttachment = {
+            ...att,
+            objectUrl: URL.createObjectURL(att.blob),
+          };
+          const hydrated: LocalMessage = { ...m, attachment };
+          void storage.saveMessage(ownerId, hydrated);
+          return hydrated;
+        }
+        if (att && att.status === 'downloading' && !att.blob) {
+          const attachment: LocalAttachment = {
+            ...att,
+            status: 'failed',
+            error: 'download interrupted',
+          };
+          const interrupted: LocalMessage = { ...m, attachment };
+          void storage.saveMessage(ownerId, interrupted);
+          return interrupted;
+        }
+        return m;
+      });
       setMessages((prev) => ({ ...prev, [peerId]: loaded }));
       const conversation = await storage.getConversation(ownerId, peerId);
       if (conversation && conversation.unread > 0) {
@@ -452,6 +848,184 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
     },
     [refresh],
   );
+
+  const teardownCall = useCallback((reason?: string) => {
+    peerRef.current?.close();
+    peerRef.current = null;
+    setRemoteStream(null);
+    setLocalStream(null);
+    setCall(null);
+    setIncomingCall(null);
+    if (reason) setCallNotice(reason);
+  }, []);
+
+  const sendCallSignal = useCallback((callId: string, message: CallSignalMessage) => {
+    socketRef.current?.emit(CALL_EVENTS.signal, { callId, data: message });
+  }, []);
+
+  const newRtcPeer = useCallback(
+    async (callId: string, mode: 'audio' | 'video' = 'audio') => {
+      const conf = await api.getRtcConfig();
+      const peer = new RtcPeer({
+        iceServers: conf.iceServers,
+        mode,
+        onSignal: (message) => sendCallSignal(callId, message),
+        onRemoteStream: (stream) => setRemoteStream(stream),
+        onConnectionChange: (state) => {
+          if (state === 'connected') {
+            socketRef.current?.emit(CALL_EVENTS.connected, { callId });
+            setCall((prev) =>
+              prev && prev.callId === callId ? { ...prev, status: 'active' } : prev,
+            );
+          }
+        },
+        onError: (err) => setCallError(err.message),
+      });
+      const local = await peer.startLocalMedia();
+      setLocalStream(local);
+      return peer;
+    },
+    [sendCallSignal],
+  );
+
+  const handleCallSignal = useCallback(async (event: CallSignalEvent) => {
+    const active = callRef.current;
+    const peer = peerRef.current;
+    if (!peer || !active || active.callId !== event.callId) return;
+    const data = event.data;
+    if (data.type === 'offer' && data.sdp) {
+      await peer.acceptOffer(data.sdp);
+    } else if (data.type === 'answer' && data.sdp) {
+      await peer.applyAnswer(data.sdp);
+    } else if (data.type === 'candidate' && data.candidate) {
+      await peer.addRemoteCandidate(data.candidate);
+    }
+  }, []);
+
+  const handleCallEnded = useCallback(
+    (event: { callId: string; reason: string }) => {
+      const incoming = incomingRef.current;
+      if (incoming && incoming.callId === event.callId) {
+        const label =
+          event.reason === 'cancelled'
+            ? 'The caller cancelled.'
+            : 'The caller is no longer reachable.';
+        teardownCall(label);
+        return;
+      }
+      const active = callRef.current;
+      if (!active || active.callId !== event.callId) return;
+      const label =
+        event.reason === 'peer_left'
+          ? 'The other participant left the call.'
+          : event.reason === 'timeout'
+            ? 'Nobody answered the call.'
+            : event.reason === 'declined'
+              ? 'The call was declined.'
+              : 'The call ended.';
+      teardownCall(label);
+    },
+    [teardownCall],
+  );
+
+  const startCall = useCallback(
+    async (peerId: string, kind: 'audio' | 'video' = 'audio') => {
+      const peer = friendsRef.current.find((f) => f.id === peerId);
+      const socket = socketRef.current;
+      if (!peer || !socket || callRef.current || peerRef.current) return;
+      const callId = newCallId();
+      setCallError(null);
+      setCallNotice(null);
+      try {
+        const rtc = await newRtcPeer(callId, kind);
+        const now = Date.now();
+        const active: ActiveCall = {
+          callId,
+          peer,
+          role: 'caller',
+          status: 'ringing',
+          startedAt: now,
+          muted: false,
+          video: kind === 'video',
+        };
+        setCall(active);
+        peerRef.current = rtc;
+        socket.emit(CALL_EVENTS.invite, { callId, recipientId: peerId, kind }, (ack: {
+          ok?: boolean;
+          error?: string;
+        }) => {
+          if (ack?.ok) return;
+          setCallError(ack?.error || 'The call could not be started.');
+          teardownCall();
+        });
+      } catch (err) {
+        setCallError(err instanceof Error ? err.message : 'Could not access the microphone.');
+      }
+    },
+    [newRtcPeer, teardownCall],
+  );
+
+  const acceptCall = useCallback(async () => {
+    const incoming = incomingRef.current;
+    const socket = socketRef.current;
+    if (!incoming || !socket || callRef.current || peerRef.current) return;
+    const callId = incoming.callId;
+    setCallError(null);
+    setCallNotice(null);
+    try {
+      const rtc = await newRtcPeer(callId, incoming.video ? 'video' : 'audio');
+      peerRef.current = rtc;
+      const active: ActiveCall = {
+        callId,
+        peer: incoming.caller,
+        role: 'callee',
+        status: 'connecting',
+        startedAt: Date.now(),
+        muted: false,
+        video: incoming.video,
+      };
+      setCall(active);
+      setIncomingCall(null);
+      socket.emit(CALL_EVENTS.accept, { callId }, (ack: { ok?: boolean; error?: string }) => {
+        if (ack?.ok) return;
+        setCallError(ack?.error || 'The call could not be accepted.');
+        teardownCall();
+      });
+    } catch (err) {
+      setCallError(err instanceof Error ? err.message : 'Could not access the microphone.');
+    }
+  }, [newRtcPeer, teardownCall]);
+
+  const declineCall = useCallback(() => {
+    const socket = socketRef.current;
+    const active = callRef.current;
+    const incoming = incomingRef.current;
+    if (!socket) return;
+    setCallNotice(null);
+    if (incoming) {
+      socket.emit(CALL_EVENTS.decline, { callId: incoming.callId });
+      teardownCall('Call declined.');
+      return;
+    }
+    if (active) {
+      const event = active.status === 'ringing' ? CALL_EVENTS.cancel : CALL_EVENTS.end;
+      socket.emit(event, { callId: active.callId });
+      teardownCall();
+    }
+  }, [teardownCall]);
+
+  const endCall = useCallback(() => {
+    const socket = socketRef.current;
+    const active = callRef.current;
+    if (!socket || !active) return;
+    socket.emit(CALL_EVENTS.end, { callId: active.callId });
+    teardownCall('Call ended.');
+  }, [teardownCall]);
+
+  const toggleMute = useCallback(() => {
+    peerRef.current?.setMuted(!(callRef.current?.muted ?? false));
+    setCall((prev) => (prev ? { ...prev, muted: !prev.muted } : prev));
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -543,6 +1117,40 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
           setOnlineUsers(event.onlineFriends);
         });
 
+        socket.on(CALL_EVENTS.ring, (event: CallRingEvent) => {
+          if (cancelled) return;
+          const caller: Friend = {
+            id: event.caller.id,
+            username: event.caller.username,
+            displayName: event.caller.displayName,
+          };
+          setIncomingCall({
+            callId: event.callId,
+            caller,
+            video: event.kind === 'video',
+          });
+        });
+        socket.on('call:accepted', (event: { callId: string }) => {
+          if (cancelled) return;
+          const active = callRef.current;
+          if (!active || active.callId !== event.callId) return;
+          setCall((prev) =>
+            prev && prev.callId === event.callId ? { ...prev, status: 'connecting' } : prev,
+          );
+          const peer = peerRef.current;
+          if (peer && active.role === 'caller') {
+            void peer.createOffer();
+          }
+        });
+        socket.on(CALL_EVENTS.signal, (event: CallSignalEvent) => {
+          if (cancelled) return;
+          void handleCallSignal(event);
+        });
+        socket.on(CALL_EVENTS.ended, (event: { callId: string; reason: string }) => {
+          if (cancelled) return;
+          handleCallEnded(event);
+        });
+
         await syncPending();
         if (cancelled) return;
         setReady(true);
@@ -556,6 +1164,8 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
 
     return () => {
       cancelled = true;
+      peerRef.current?.close();
+      peerRef.current = null;
       socketRef.current?.close();
       socketRef.current = null;
       peerKeysRef.current.clear();
@@ -563,6 +1173,12 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [user.id]);
+
+  useEffect(() => {
+    if (!callNotice) return;
+    const timer = setTimeout(() => setCallNotice(null), 4000);
+    return () => clearTimeout(timer);
+  }, [callNotice]);
 
   const value = useMemo<ChatContextValue>(
     () => ({
@@ -582,6 +1198,9 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       setActivePeerId,
       openConversation,
       sendMessage,
+      sendAttachment,
+      retryAttachment,
+      retryAttachmentDownload,
       retryOutbox,
       refresh,
       search,
@@ -589,6 +1208,17 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       acceptRequest,
       rejectRequest,
       cancelRequest,
+      call,
+      incomingCall,
+      callError,
+      remoteStream,
+      localStream,
+      callNotice,
+      startCall,
+      acceptCall,
+      declineCall,
+      endCall,
+      toggleMute,
     }),
     [
       user,
@@ -607,6 +1237,9 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       setActivePeerId,
       openConversation,
       sendMessage,
+      sendAttachment,
+      retryAttachment,
+      retryAttachmentDownload,
       retryOutbox,
       refresh,
       search,
@@ -614,6 +1247,17 @@ export function ChatProvider({ user, children }: { user: User; children: React.R
       acceptRequest,
       rejectRequest,
       cancelRequest,
+      call,
+      incomingCall,
+      callError,
+      remoteStream,
+      localStream,
+      callNotice,
+      startCall,
+      acceptCall,
+      declineCall,
+      endCall,
+      toggleMute,
     ],
   );
 

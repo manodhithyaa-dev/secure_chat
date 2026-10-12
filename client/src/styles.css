@@ -549,3 +549,290 @@ button.icon-btn {
     display: none;
   }
 }
+
+/* ------------------------------------------------------------------ */
+/* Attachments                                                         */
+/* ------------------------------------------------------------------ */
+.att {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+  max-width: 320px;
+}
+.att .att-image {
+  max-width: 280px;
+  max-height: 320px;
+  border-radius: 8px;
+  display: block;
+  cursor: zoom-in;
+  object-fit: cover;
+}
+.att.image {
+  cursor: default;
+}
+.att.audio audio {
+  width: 100%;
+  max-width: 300px;
+  height: 36px;
+}
+.att.file {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+.att-download {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-decoration: none;
+  color: inherit;
+}
+.att-name {
+  font-weight: 600;
+  word-break: break-word;
+}
+.att.failed {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.att.stale {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+.att-progress {
+  height: 4px;
+  background: rgba(128, 128, 128, 0.25);
+  border-radius: 999px;
+  overflow: hidden;
+}
+.att-progress > div {
+  height: 100%;
+  background: var(--accent, #2e9eff);
+  transition: width 0.15s linear;
+}
+
+/* ------------------------------------------------------------------ */
+/* Lightbox (image viewer)                                             */
+/* ------------------------------------------------------------------ */
+.lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  background: rgba(5, 10, 14, 0.92);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+}
+.lightbox img {
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  border-radius: 8px;
+}
+.lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 20px;
+  font-size: 28px;
+  line-height: 1;
+  background: none;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+}
+.lightbox-caption {
+  color: #cfd8dd;
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------------------ */
+/* Composer attachment button                                          */
+/* ------------------------------------------------------------------ */
+.composer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.composer-att {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 8px;
+  cursor: pointer;
+  color: var(--muted);
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.composer-att:hover {
+  background: rgba(128, 128, 128, 0.15);
+  color: var(--text, #d5dde2);
+}
+.composer-att-icon {
+  font-size: 18px;
+  line-height: 1;
+}
+.composer-mic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.composer-mic:hover {
+  background: rgba(128, 128, 128, 0.15);
+  color: var(--text, #d5dde2);
+}
+.recorder {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+  padding: 8px 10px;
+  border: 1px solid rgba(128, 128, 128, 0.35);
+  border-radius: 8px;
+  background: rgba(128, 128, 128, 0.08);
+}
+.recorder-dot {
+  color: #e5484d;
+  font-size: 16px;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.recorder-timer {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  min-width: 40px;
+}
+button.mini.danger {
+  color: #e5484d;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.25; }
+}
+
+/* ---------- Audio calls ---------- */
+.call-screen,
+.incoming-call {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(6, 12, 16, 0.92);
+  backdrop-filter: blur(3px);
+}
+.call-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 32px 40px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  min-width: 300px;
+  text-align: center;
+}
+.call-card h2 {
+  margin: 0;
+}
+.call-status {
+  margin: 0;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.call-ringing {
+  color: var(--accent);
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.call-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 8px;
+}
+button.mini.danger.hangup {
+  background: rgba(224, 83, 83, 0.18);
+  border: 1px solid rgba(224, 83, 83, 0.5);
+  padding: 8px 14px;
+}
+.call-notice,
+.call-error {
+  position: fixed;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 70;
+  min-width: 260px;
+  text-align: center;
+}
+.call-notice {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+}
+.call-error {
+  background: rgba(224, 83, 83, 0.15);
+  border: 1px solid rgba(224, 83, 83, 0.4);
+  color: #ffb4b4;
+}
+.call-video-stage {
+  position: relative;
+  width: min(880px, 92vw);
+  height: min(560px, 88vh);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #000;
+  border: 1px solid var(--border);
+}
+.remote-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+.local-video {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 160px;
+  aspect-ratio: 4 / 3;
+  border-radius: 10px;
+  object-fit: cover;
+  transform: scaleX(-1);
+  background: #000;
+  border: 1px solid var(--border);
+  z-index: 2;
+}
+.call-video-meta {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 20px;
+  background: linear-gradient(transparent, rgba(0, 0, 0, 0.8));
+}
+
+@media (max-width: 720px) {
+  .local-video {
+    width: 108px;
+  }
+}

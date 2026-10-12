@@ -26,6 +26,10 @@ export default defineConfig({
     baseURL: CLIENT_URL,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
+    permissions: ['microphone'],
+    launchOptions: {
+      args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+    },
   },
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
   webServer: [
@@ -39,6 +43,7 @@ export default defineConfig({
         DATABASE_FILE: ':memory:',
         CORS_ORIGIN: CLIENT_URL,
         NODE_ENV: 'test',
+        RATE_LIMIT_MAX: '1000',
       },
     },
     {

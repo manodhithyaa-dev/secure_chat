@@ -25,6 +25,53 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Server view of an attachment (ticket before upload / row after upload).
+ * All fields here are server-visible metadata only — no key, no plaintext.
+ */
+export interface AttachmentTicket {
+  id: string;
+  senderId: string;
+  recipientId: string | null;
+  messageId: string | null;
+  kind: 'file' | 'image' | 'audio';
+  name: string;
+  contentType: string;
+  plainSize: number;
+  cipherSize: number;
+  status: 'pending' | 'ready';
+  createdAt: number;
+  expiresAt: number;
+}
+
+async function readJson(res: Response): Promise<unknown> {
+  const text = await res.text();
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
+async function apiErrorFor(res: Response, payload: unknown): Promise<ApiError> {
+  const err = (payload as { error?: { code?: string; message?: string; details?: unknown } })
+    ?.error;
+  const code = err?.code || 'error';
+  const deviceReason = sessionInvalidReasonFor(code);
+  if (deviceReason) {
+    notifySessionInvalid(deviceReason);
+  } else if (res.status === 401) {
+    notifySessionInvalid('session_expired');
+  }
+  return new ApiError(
+    res.status,
+    code,
+    err?.message || `Request failed (${res.status})`,
+    err?.details,
+  );
+}
+
 async function request<T>(
   method: string,
   path: string,
@@ -126,6 +173,7 @@ export const api = {
     iv: string;
     alg: string;
     deviceId?: string;
+    attachmentId?: string;
   }) =>
     request<{ messageId: string; status: string; queued: boolean; duplicate: boolean }>(
       'POST',
@@ -142,6 +190,7 @@ export const api = {
         iv: string;
         alg: string;
         createdAt: number;
+        attachmentId?: string;
       }>;
     }>('GET', '/messages/pending'),
   ackMessage: (messageId: string) =>
@@ -151,6 +200,95 @@ export const api = {
       'GET',
       `/messages/status/${encodeURIComponent(messageId)}`,
     ),
+
+  createAttachmentTicket: (body: {
+    kind: string;
+    name: string;
+    contentType: string;
+    plainSize: number;
+    cipherSize: number;
+  }) =>
+    request<{ attachment: AttachmentTicket }>('POST', '/attachments', body),
+  uploadAttachmentData: (id: string, blob: Blob, onProgress?: (p: number) => void) =>
+    new Promise<{ ok: boolean; attachment: AttachmentTicket }>((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('PUT', `${BASE}/attachments/${encodeURIComponent(id)}/data`);
+      xhr.withCredentials = true;
+      xhr.setRequestHeader('content-type', 'application/octet-stream');
+      if (onProgress) {
+        xhr.upload.onprogress = (event) => {
+          if (event.lengthComputable && event.total > 0) {
+            onProgress(event.loaded / event.total);
+          }
+        };
+      }
+      xhr.onload = () => {
+        let payload: unknown = null;
+        try {
+          payload = xhr.responseText ? JSON.parse(xhr.responseText) : null;
+        } catch {
+          payload = null;
+        }
+        if (xhr.status >= 200 && xhr.status < 300) {
+          onProgress?.(1);
+          resolve(payload as { ok: boolean; attachment: AttachmentTicket });
+          return;
+        }
+        const err = (payload as { error?: { code?: string; message?: string; details?: unknown } })
+          ?.error;
+        const code = err?.code || 'error';
+        const deviceReason = sessionInvalidReasonFor(code);
+        if (deviceReason) {
+          notifySessionInvalid(deviceReason);
+        } else if (xhr.status === 401) {
+          notifySessionInvalid('session_expired');
+        }
+        reject(
+          new ApiError(
+            xhr.status,
+            code,
+            err?.message || `Upload failed (${xhr.status})`,
+            err?.details,
+          ),
+        );
+      };
+      xhr.onerror = () => reject(new ApiError(0, 'network_error', 'Upload failed'));
+      xhr.onabort = () => reject(new ApiError(0, 'aborted', 'Upload aborted'));
+      xhr.send(blob);
+    }),
+  downloadAttachment: async (id: string, onProgress?: (p: number) => void) => {
+    const res = await fetch(`${BASE}/attachments/${encodeURIComponent(id)}/data`, {
+      method: 'GET',
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      throw await apiErrorFor(res, await readJson(res));
+    }
+    const total = Number(res.headers.get('content-length')) || 0;
+    if (!res.body) return await res.arrayBuffer();
+    const reader = res.body.getReader();
+    const chunks: Uint8Array[] = [];
+    let received = 0;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.byteLength;
+      if (total) onProgress?.(received / total);
+    }
+    const out = new Uint8Array(received);
+    let offset = 0;
+    for (const chunk of chunks) {
+      out.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return out.buffer as ArrayBuffer;
+  },
+  deleteAttachment: (id: string) =>
+    request<{ ok: boolean; deleted: boolean }>('DELETE', `/attachments/${encodeURIComponent(id)}`),
+
+  getRtcConfig: () =>
+    request<{ iceServers: RTCIceServer[] }>('GET', '/rtc-config'),
 };
 
 export default api;

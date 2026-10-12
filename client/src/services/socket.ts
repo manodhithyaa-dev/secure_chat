@@ -7,6 +7,7 @@ export interface IncomingMessageEvent {
   iv: string;
   alg: string;
   createdAt: number;
+  attachmentId?: string;
 }
 
 export interface MessageStatusEvent {

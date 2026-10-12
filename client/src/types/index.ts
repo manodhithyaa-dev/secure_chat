@@ -1,3 +1,5 @@
+import type { AttachmentMeta } from '../crypto/payload';
+
 export interface User {
   id: string;
   username: string;
@@ -38,6 +40,40 @@ export type MessageDirection = 'in' | 'out';
 
 export type MessageStatus = 'pending' | 'sent' | 'delivered' | 'failed';
 
+export type LocalAttachmentStatus =
+  | 'preparing'
+  | 'uploading'
+  | 'downloading'
+  | 'available'
+  | 'failed'
+  | 'cancelled';
+
+/** Client-side view of an attachment attached to a message. */
+export interface LocalAttachment {
+  /** Server's opaque attachment id (null until the ticket exists). */
+  serverId: string | null;
+  kind: 'file' | 'image' | 'audio';
+  name: string;
+  mime: string;
+  /** Plaintext size in bytes. */
+  size: number;
+  /** Encrypted size in bytes. */
+  cipherSize: number | null;
+  /**
+   * Metadata envelope (id/key/salt). Present once the message plaintext is
+   * built (outgoing) or decrypted (incoming).
+   */
+  meta: AttachmentMeta | null;
+  status: LocalAttachmentStatus;
+  /** 0..1 upload/download progress. */
+  progress: number;
+  /** Decrypted media, persisted locally for offline viewing. */
+  blob?: Blob;
+  /** Transient object URL for rendering; never persisted. */
+  objectUrl?: string;
+  error?: string;
+}
+
 export interface LocalMessage {
   id: string;
   ownerId: string;
@@ -54,6 +90,8 @@ export interface LocalMessage {
   createdAt: number;
   updatedAt: number;
   error?: string;
+  /** Present for attachment messages (images, files, voice). */
+  attachment?: LocalAttachment;
 }
 
 export interface OutboxRecord {
@@ -67,6 +105,8 @@ export interface OutboxRecord {
   status: 'pending' | 'sent' | 'failed';
   attempts: number;
   lastError?: string;
+  /** Server attachment id to link when the message is submitted. */
+  attachmentId?: string;
 }
 
 export interface Conversation {
