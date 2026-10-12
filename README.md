@@ -32,6 +32,23 @@ npm run dev
 - Backend API: http://localhost:4000
 - Frontend: http://localhost:5173 (Vite proxies `/api` and `/socket.io` to the backend)
 
+## Run with Docker (single port)
+
+The whole app runs behind nginx on one port. nginx serves the built SPA and
+reverse-proxies `/api` and `/socket.io` (including the WebSocket upgrade) to the
+backend container; only the nginx port is published.
+
+```bash
+docker compose up --build      # then open http://localhost:8080
+```
+
+- Change the published port with `WEB_PORT` (e.g. `WEB_PORT=9000 docker compose up`).
+- SQLite and encrypted attachments persist in the `securechat-data` volume.
+- `CORS_ORIGIN` defaults to `http://localhost:8080`; set it (and `WEB_PORT`) to the
+  origin users actually visit.
+- Session cookies are `Secure` only when `COOKIE_SECURE=true`. Over plain HTTP leave
+  it `false`; behind a TLS terminator set it `true`.
+
 Other commands:
 
 ```bash
@@ -67,6 +84,7 @@ See `.env.example`. All variables are optional and have defaults.
 | `PORT` | `4000` | Backend port |
 | `DATABASE_FILE` | `./data/securechat.sqlite` | SQLite path (relative to `server/`) |
 | `CORS_ORIGIN` | `http://localhost:5173` | Allowed API origins (comma-separated) |
+| `COOKIE_SECURE` | `true` in production | Mark the session cookie `Secure` (set `false` for plain-HTTP Docker) |
 | `SESSION_TTL_MS` | 7 days | Session lifetime |
 | `MESSAGE_TTL_MS` | 7 days | Offline queue expiry |
 | `CLEANUP_INTERVAL_MS` | 1 hour | Expired-row cleanup interval |

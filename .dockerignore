@@ -1,0 +1,36 @@
+# Keep the Docker build context small and free of secrets.
+
+# Dependencies (reinstalled inside the image from the lockfile)
+node_modules
+**/node_modules
+
+# Build output
+client/dist
+dist
+build
+
+# Runtime data / secrets
+.env
+.env.*
+!.env.example
+server/data
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# VCS / tooling / test artifacts
+.git
+.gitignore
+*.log
+coverage
+test-results
+playwright-report
+blob-report
+e2e
+docs
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
