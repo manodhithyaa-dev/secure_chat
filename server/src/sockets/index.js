@@ -5,6 +5,17 @@ import { getUserById } from '../auth/service.js';
 import { getActiveDeviceRow, getDeviceRow } from '../devices/service.js';
 import { acknowledgeMessage } from '../messages/service.js';
 import { listFriends } from '../friends/service.js';
+import {
+  createCall,
+  acceptCall,
+  declineCall,
+  cancelCall,
+  endCall,
+  markConnected,
+  relaySignal,
+  handleParticipantDisconnect,
+  isMember,
+} from '../calls/service.js';
 import { setIo, userRoom, emitToUser, isUserOnline } from './emitter.js';
 
 const SESSION_COOKIE = 'sc_token';
@@ -116,11 +127,134 @@ export function createSocketServer(httpServer) {
       if (typeof ack === 'function') ack({ ok: true });
     });
 
+    socket.on(
+      'call:invite',
+      (payload, ack) => {
+        const respond = typeof ack === 'function' ? ack : () => {};
+        try {
+          if (!deviceStillAuthorized(socket)) {
+            throw new Error('device_not_authorized');
+          }
+          const result = createCall({
+            callId: payload?.callId,
+            callerId: user.id,
+            calleeId: payload?.recipientId,
+            kind: payload?.kind,
+          });
+          if (result.error) {
+            const error = new Error(result.error);
+            error.code = result.error;
+            throw error;
+          }
+          const callee = getUserById(result.call.calleeId);
+          emitToUser(result.call.calleeId, 'call:ring', {
+            callId: result.call.callId,
+            kind: result.call.kind,
+            caller: {
+              id: user.id,
+              username: user.username,
+              displayName: user.displayName,
+            },
+          });
+          respond({ ok: true, callId: result.call.callId });
+        } catch (err) {
+          respond({ ok: false, error: err.message, code: err.code || err.message });
+        }
+      },
+    );
+
+    socket.on('call:accept', (payload, ack) => {
+      const respond = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!deviceStillAuthorized(socket)) {
+          throw new Error('device_not_authorized');
+        }
+        const result = acceptCall(payload?.callId, user.id);
+        if (result.error) throw new Error(result.error);
+        emitToUser(result.call.callerId, 'call:accepted', { callId: result.call.callId });
+        respond({ ok: true, callId: result.call.callId });
+      } catch (err) {
+        respond({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('call:decline', (payload, ack) => {
+      const respond = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!deviceStillAuthorized(socket)) {
+          throw new Error('device_not_authorized');
+        }
+        const result = declineCall(payload?.callId, user.id);
+        if (result.error) throw new Error(result.error);
+        respond({ ok: true, callId: result.call.callId });
+      } catch (err) {
+        respond({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('call:cancel', (payload, ack) => {
+      const respond = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!deviceStillAuthorized(socket)) {
+          throw new Error('device_not_authorized');
+        }
+        const result = cancelCall(payload?.callId, user.id);
+        if (result.error) throw new Error(result.error);
+        respond({ ok: true, callId: result.call.callId });
+      } catch (err) {
+        respond({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('call:end', (payload, ack) => {
+      const respond = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!deviceStillAuthorized(socket)) {
+          throw new Error('device_not_authorized');
+        }
+        const result = endCall(payload?.callId, user.id);
+        if (result.error) throw new Error(result.error);
+        respond({ ok: true, callId: result.call.callId });
+      } catch (err) {
+        respond({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('call:connected', (payload, ack) => {
+      const respond = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!deviceStillAuthorized(socket)) {
+          throw new Error('device_not_authorized');
+        }
+        const result = markConnected(payload?.callId, user.id);
+        if (result.error) throw new Error(result.error);
+        respond({ ok: true, callId: result.call.callId });
+      } catch (err) {
+        respond({ ok: false, error: err.message });
+      }
+    });
+
+    socket.on('call:signal', (payload, ack) => {
+      const respond = typeof ack === 'function' ? ack : () => {};
+      try {
+        if (!deviceStillAuthorized(socket)) {
+          throw new Error('device_not_authorized');
+        }
+        const callId = payload?.callId;
+        if (!isMember(callId, user.id)) throw new Error('not_participant');
+        relaySignal(callId, user.id, payload?.data);
+        respond({ ok: true });
+      } catch (err) {
+        respond({ ok: false, error: err.message });
+      }
+    });
+
     socket.on('disconnect', () => {
       const count = (presence.get(user.id) || 1) - 1;
       if (count <= 0) {
         presence.delete(user.id);
         broadcastPresence(user.id, false);
+        handleParticipantDisconnect(user.id);
       } else {
         presence.set(user.id, count);
       }

@@ -2,6 +2,7 @@
 process.env.NODE_ENV = 'test';
 process.env.DATABASE_FILE = ':memory:';
 process.env.RATE_LIMIT_MAX = '10000';
+process.env.AUTH_RATE_LIMIT_MAX = '10000';
 process.env.CLEANUP_INTERVAL_MS = '600000';
 
 const { startServer } = await import('../src/index.js');

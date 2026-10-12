@@ -1,6 +1,7 @@
 import { getDb, withTransaction } from '../database/db.js';
 import { badRequest, conflict, forbidden, notFound } from '../middleware/errors.js';
 import { areFriends } from '../friends/service.js';
+import { linkAttachmentToMessage } from '../attachments/service.js';
 import config from '../config.js';
 
 const ALLOWED_ALGORITHMS = new Set(['AES-256-GCM']);
@@ -43,6 +44,7 @@ function publicMessage(row) {
     expiresAt: row.expires_at,
     deliveredAt: row.delivered_at,
     ackedAt: row.acked_at,
+    attachmentId: row.attachment_id || null,
   };
 }
 
@@ -52,7 +54,7 @@ function publicMessage(row) {
  */
 export function submitMessage(senderId, input) {
   validateMessageInput(input);
-  const { messageId, recipientId, ciphertext, iv, alg, deviceId } = input;
+  const { messageId, recipientId, ciphertext, iv, alg, deviceId, attachmentId } = input;
 
   if (senderId === recipientId) {
     throw badRequest('cannot message yourself');
@@ -80,8 +82,22 @@ export function submitMessage(senderId, input) {
        VALUES (?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?)`,
     ).run(messageId, senderId, recipientId, deviceId || null, ciphertext, iv, alg, now, expiresAt);
 
+    // Link the (already uploaded) ciphertext attachment to this message inside
+    // the same transaction: either both commit or neither does.
+    if (attachmentId) {
+      linkAttachmentToMessage({ attachmentId, senderId, recipientId, messageId, expiresAt });
+    }
+
     return {
-      message: publicMessage(tx.prepare('SELECT * FROM messages WHERE message_id = ?').get(messageId)),
+      message: publicMessage(
+        tx
+          .prepare(
+            `SELECT m.*, a.id AS attachment_id
+             FROM messages m LEFT JOIN attachments a ON a.message_id = m.message_id
+             WHERE m.message_id = ?`,
+          )
+          .get(messageId),
+      ),
       duplicate: false,
     };
   });
@@ -107,15 +123,24 @@ export function getMessageStatus(messageId, requesterId) {
   };
 }
 
+export function getAttachmentIdForMessage(messageId) {
+  const row = getDb()
+    .prepare('SELECT id FROM attachments WHERE message_id = ?')
+    .get(messageId);
+  return row ? row.id : null;
+}
+
 /** Messages awaiting recipient persistence acknowledgement. */
 export function getPendingForRecipient(recipientId) {
   const db = getDb();
   const rows = db
     .prepare(
-      `SELECT * FROM messages
-       WHERE recipient_id = ? AND status IN ('queued', 'delivered')
-         AND expires_at > ?
-       ORDER BY created_at ASC`,
+      `SELECT m.*, a.id AS attachment_id
+       FROM messages m
+       LEFT JOIN attachments a ON a.message_id = m.message_id
+       WHERE m.recipient_id = ? AND m.status IN ('queued', 'delivered')
+         AND m.expires_at > ?
+       ORDER BY m.created_at ASC`,
     )
     .all(recipientId, Date.now());
   return rows.map(publicMessage);

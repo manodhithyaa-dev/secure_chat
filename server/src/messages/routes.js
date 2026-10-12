@@ -30,6 +30,7 @@ router.post(
         iv: message.iv,
         alg: message.alg,
         createdAt: message.createdAt,
+        attachmentId: message.attachmentId,
       });
       markDelivered(message.messageId);
       status = 'delivered';

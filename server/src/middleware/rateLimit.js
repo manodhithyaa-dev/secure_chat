@@ -35,5 +35,5 @@ export function rateLimit({
 
 /** Stricter limiter for credential endpoints. */
 export function authRateLimit() {
-  return rateLimit({ windowMs: 60_000, max: 20 });
+  return rateLimit({ windowMs: 60_000, max: config.authRateLimitMax });
 }

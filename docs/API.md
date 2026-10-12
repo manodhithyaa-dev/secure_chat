@@ -81,15 +81,18 @@ register/login (see above); there is no `POST /devices`.
 Requires auth. Server stores ciphertext only.
 
 - `POST /messages`
-  Body: `{ messageId, recipientId, ciphertext, iv, alg, deviceId? }`
+  Body: `{ messageId, recipientId, ciphertext, iv, alg, deviceId?, attachmentId? }`
   - `alg` must be `AES-256-GCM`.
   - Requires an **accepted friendship** (otherwise `403`); self-messaging → `400`.
   - `messageId` is the idempotency key.
-  - → `201 { messageId, status, queued, duplicate }`
+  - `attachmentId` (optional) links an uploaded, still-pending attachment; it must be
+    owned by the sender, `ready`, and not already linked to another message.
+  - → `201 { messageId, status, queued, duplicate, attachmentId }`
   - `status`: `delivered` (recipient socket received it) or `queued` (offline).
 
 - `GET /messages/pending` → `{ messages: [...] }`
-  Non-acked, non-expired ciphertext for the authenticated recipient.
+  Non-acked, non-expired ciphertext for the authenticated recipient. Each row includes
+  `attachmentId` when the message carries an attachment.
 
 - `POST /messages/ack` `{ messageId }` → `{ ok, messageId, status }`
   Recipient confirms local persistence; queued ciphertext is erased.
@@ -97,6 +100,46 @@ Requires auth. Server stores ciphertext only.
 
 - `GET /messages/status/:messageId` → `{ messageId, status, ... }`
   `queued | delivered | acked | expired`. Participants only (`403` for others).
+
+## Attachments
+
+Requires auth. The server stores **opaque ciphertext only** (never keys, salt, or
+plaintext). Upload is two-step: create a ticket, then stream the ciphertext.
+
+- `POST /attachments`
+  Body: `{ kind, name, contentType, plainSize, cipherSize }`
+  - `kind` one of `file | image | audio`; `contentType` must be a non-executable,
+    known-safe MIME type (allowlist; `text/html`, `image/svg+xml`, … rejected → `400`).
+  - `plainSize`/`cipherSize` are metadata only (no size check at ticket time).
+  - → `201 { attachment: {...} }` — `status: "pending"`, `expiresAt` (24 h).
+
+- `PUT /attachments/:id/data`
+  Raw `application/octet-stream` upload of the ciphertext.
+  - Streams to disk without buffering; enforces a 16 MiB cap (→ `413`) and a
+    256 MiB/user running quota (→ `413`) *after* the body.
+
+- `GET /attachments/:id/data`
+  - Authorized to the **sender or recipient** only; others → `403`.
+  - Copy is not stale (`expires_at`/deleted → `410 Gone`).
+  - Served `X-Content-Type-Options: nosniff`, `Cache-Control: private, no-store`,
+    `Content-Disposition: attachment; filename*=UTF-8''<name>`.
+
+- `DELETE /attachments/:id`
+  Sender only (→ `403` otherwise); idempotent. Also cancels unlinked/unsent uploads.
+
+Cleanup: a background job periodically removes expired rows and their server blobs and
+reconciles orphaned files.
+
+## Calls
+
+Requires auth.
+
+- `GET /rtc-config`
+  - → `200 { iceServers: [{ urls: [...] }, ...] }`. STUN candidates from
+    `RTC_STUN_SERVERS` (default: Google STUN); a `RTC_TURN_URL` with
+    `RTC_TURN_USERNAME`/`RTC_TURN_CREDENTIAL` appends a TURN entry, so credentials never
+    live in client configuration.
+  - Stale TURN credentials can be rotated server-side without redeploying the client.
 
 ## Health
 
@@ -116,11 +159,15 @@ replaced.
 | --- | --- | --- |
 | `presence:snapshot` | `{ onlineFriends: string[] }` | On connect |
 | `presence` | `{ userId, online }` | Friend presence change |
-| `message:new` | `{ messageId, senderId, ciphertext, iv, alg, createdAt }` | Ciphertext delivered |
+| `message:new` | `{ messageId, senderId, ciphertext, iv, alg, createdAt, attachmentId? }` | Ciphertext delivered |
 | `message:status` | `{ messageId, status }` | Status change (`acked`) |
 | `friend:request` | request | New incoming request |
 | `friend:accepted` | request | Request accepted (both users) |
 | `friend:request:update` | request | Rejected/cancelled |
+| `call:ring` | `{ callId, kind, caller: { id, username, displayName } }` | Callee is being called (`kind`: `audio`\|`video`) |
+| `call:accepted` | `{ callId }` | Callee accepted (to caller) |
+| `call:ended` | `{ callId, reason }` | `ended | declined | cancelled | timeout | peer_left` |
+| `call:signal` | `{ callId, from, data: { type, sdp?, candidate? } }` | Relayed SDP/ICE from the peer |
 
 **Client → server**
 
@@ -128,3 +175,13 @@ replaced.
 | --- | --- | --- |
 | `message:ack` | `{ messageId }` | Recipient persisted the message; erases queued ciphertext, notifies sender |
 | `sync:request` | — | Triggers a reconnect sync (`ack`'d) |
+| `call:invite` | `{ callId, recipientId, kind? }` | Start a call (`kind` defaults to `audio`; `ack`: `{ ok, callId }` or `{ ok:false, error }`; rejects `not_friends`, `callee_offline`, `caller_busy`, `callee_busy`) |
+| `call:accept` | `{ callId }` | Callee answers |
+| `call:decline` | `{ callId }` | Callee declines while ringing |
+| `call:cancel` | `{ callId }` | Caller cancels while ringing |
+| `call:end` | `{ callId }` | Either participant hangs up |
+| `call:connected` | `{ callId }` | Peer connection established (marks the call active) |
+| `call:signal` | `{ callId, data }` | Send SDP/ICE to the peer (non-participants rejected) |
+
+All call events re-check device authorization; a ring times out server-side after
+`CALL_RING_TIMEOUT_MS` (45 s) and signaling expires after `CALL_SIGNALING_TTL_MS` (60 s).

@@ -15,6 +15,8 @@ export const notFound = (message = 'Not found') => new AppError(404, 'not_found'
 export const conflict = (message, details) => new AppError(409, 'conflict', message, details);
 export const tooMany = (message = 'Too many requests') =>
   new AppError(429, 'rate_limited', message);
+export const payloadTooLarge = (message = 'Payload too large') =>
+  new AppError(413, 'payload_too_large', message);
 
 // Device-binding errors. Kept distinct so clients can drive the right UX
 // (e.g. offer an explicit replacement flow) without leaking server internals.

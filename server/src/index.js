@@ -7,6 +7,7 @@ import { createSocketServer } from './sockets/index.js';
 import { cleanupExpiredMessages } from './messages/service.js';
 import { cleanupExpiredSessions } from './auth/sessions.js';
 import { cleanupChallenges } from './auth/challenges.js';
+import { cleanupExpiredAttachments } from './attachments/service.js';
 
 function startCleanupJob() {
   const run = () => {
@@ -14,9 +15,10 @@ function startCleanupJob() {
       const messages = cleanupExpiredMessages();
       const sessions = cleanupExpiredSessions();
       const challenges = cleanupChallenges();
-      if (messages || sessions || challenges) {
+      const attachments = cleanupExpiredAttachments();
+      if (messages || sessions || challenges || attachments) {
         console.log(
-          `[cleanup] removed ${messages} expired messages, ${sessions} expired sessions, ${challenges} challenges`,
+          `[cleanup] removed ${messages} expired messages, ${sessions} expired sessions, ${challenges} challenges, ${attachments} attachments`,
         );
       }
     } catch (err) {

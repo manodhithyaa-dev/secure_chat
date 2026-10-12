@@ -10,6 +10,8 @@ import userRoutes from './users/routes.js';
 import friendRoutes from './friends/routes.js';
 import deviceRoutes from './devices/routes.js';
 import messageRoutes from './messages/routes.js';
+import attachmentRoutes from './attachments/routes.js';
+import callRoutes from './calls/routes.js';
 
 export function createApp() {
   const app = express();
@@ -37,6 +39,8 @@ export function createApp() {
   api.use('/', friendRoutes);
   api.use('/', deviceRoutes);
   api.use('/', messageRoutes);
+  api.use('/', attachmentRoutes);
+  api.use('/', callRoutes);
   app.use('/api/v1', api);
 
   app.use('/api', (_req, res) => {
