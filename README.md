@@ -49,6 +49,20 @@ docker compose up --build      # then open http://localhost:8080
 - Session cookies are `Secure` only when `COOKIE_SECURE=true`. Over plain HTTP leave
   it `false`; behind a TLS terminator set it `true`.
 
+### Publish on your tailnet (Tailscale)
+
+To share the app privately over HTTPS (required for camera/microphone in calls):
+
+```bash
+docker compose up -d --build
+scripts/tailscale-serve.sh          # or: tailscale serve --https=443 http://127.0.0.1:8080
+```
+
+Then set `CORS_ORIGIN=https://<node>.<tailnet>.ts.net` and `COOKIE_SECURE=true`
+in `.env` and restart. nginx is bound to loopback only, so the tailnet reaches
+it exclusively through Tailscale Serve. Full instructions, ICE/TURN guidance,
+and troubleshooting are in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
+
 Other commands:
 
 ```bash
@@ -96,6 +110,7 @@ See `.env.example`. All variables are optional and have defaults.
 - [`docs/E2EE.md`](docs/E2EE.md)
 - [`docs/OFFLINE_DELIVERY.md`](docs/OFFLINE_DELIVERY.md)
 - [`docs/API.md`](docs/API.md)
+- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — Docker + Tailscale Serve
 - [`docs/IMPLEMENTATION_STATUS.md`](docs/IMPLEMENTATION_STATUS.md)
 
 ## Security limitations (read this)

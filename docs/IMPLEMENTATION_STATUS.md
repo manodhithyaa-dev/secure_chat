@@ -31,9 +31,13 @@ Last updated: 2026-10-12. Version 0.1.0.
 - **Repo & tooling:** npm workspaces; root `npm run dev` runs server + client; migrations.
 - **Deployment:** multi-stage Docker images for the backend and the nginx web tier.
   `docker compose up --build` serves the built SPA and reverse-proxies `/api` +
-  `/socket.io` (WebSocket upgrade, 32 MiB body limit) on a single published port;
-  SQLite and encrypted attachments persist in a named volume. `COOKIE_SECURE` selects
-  the session cookie's `Secure` flag for plain-HTTP vs TLS-terminated deployments.
+  `/socket.io` (WebSocket upgrade, 32 MiB body limit) on a single published port
+  (loopback only); SQLite and encrypted attachments persist in a named volume.
+  `COOKIE_SECURE` selects the session cookie's `Secure` flag for plain-HTTP vs
+  TLS-terminated deployments. For a private network, `scripts/tailscale-serve.sh`
+  publishes it tailnet-only over HTTPS via Tailscale Serve (trusted `*.ts.net` cert,
+  required for camera/mic in calls); ICE servers are tunable (`RTC_STUN_SERVERS`,
+  `RTC_TURN_*`) and STUN can be disabled on a tailnet (`docs/DEPLOYMENT.md`).
 - **Auth:** register, login, logout, `me`; scrypt password hashing; server-side sessions
   with expiry and revocation; HttpOnly cookie session; authenticated routes.
 - **Device binding:** one active device per account (unique partial index); challenge +

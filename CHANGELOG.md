@@ -31,6 +31,12 @@ All notable changes to this project are documented here.
   (`server/Dockerfile`, `client/Dockerfile`, `client/nginx.conf`, `docker-compose.yml`).
 - `COOKIE_SECURE` config override (defaults to `NODE_ENV === 'production'`) so the
   session cookie's `Secure` flag can match whether the deployment terminates TLS.
+- **Tailscale tailnet deployment.** Docker binds the web tier to loopback only, and
+  `scripts/tailscale-serve.sh` (or `tailscale serve --https=443 http://127.0.0.1:8080`)
+  publishes it privately over HTTPS with an automatic trusted `*.ts.net` certificate —
+  which is required for browser camera/microphone access in calls. Adds `RTC_STUN_SERVERS`
+  / `RTC_TURN_*` passthrough (STUN can be disabled on a pure tailnet) and a full
+  `docs/DEPLOYMENT.md` guide.
 - **End-to-end encrypted attachments (images & files).** Files are encrypted in the
   browser in 1 MiB chunks (AES-256-GCM, per-chunk nonces derived from a random per-file
   salt via HKDF-SHA-256, chunk AAD binding format version/chunk size/count/total
